@@ -132,3 +132,7 @@ dist
 
 .vscode
 .history
+
+# UI compiled files
+ui/client.js
+ui/client.js.map

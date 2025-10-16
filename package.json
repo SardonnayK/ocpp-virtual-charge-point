@@ -6,7 +6,11 @@
     "lint": "biome lint src",
     "format": "biome format src",
     "typecheck": "tsc --noEmit --esModuleInterop --skipLibCheck src/**/*.ts",
-    "check": "npm run lint && npm run format && npm run typecheck"
+    "check": "npm run lint && npm run format && npm run typecheck",
+    "ui:build": "tsc ui/client.ts --outDir ui --target ES2020 --module ESNext --lib ES2020,DOM --skipLibCheck",
+    "ui:start": "npm run ui:build && tsx ui/server.ts",
+    "ui": "npm run ui:start",
+    "start:ui": "node start-ui.js"
   },
   "author": "Solidstudio",
   "license": "Apache-2.0",

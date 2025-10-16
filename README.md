@@ -1,6 +1,16 @@
 # OCPP Virtual Charge Point
 
-Simple, configurable, terminal-based OCPP Charging Station simulator written in Node.js with Schema validation.
+Simple, configurable OCPP Charging Station simulator written in Node.js with Schema validation.
+
+## ✨ New: Web UI Available!
+
+Manage multiple virtual charge points with an easy-to-use web interface:
+
+```bash
+npm run ui
+```
+
+Then open **http://localhost:3001** in your browser. See [UI-GUIDE.md](./UI-GUIDE.md) for details.
 
 ## Watch our video introduction
 
@@ -17,6 +27,18 @@ npm install
 ```
 
 ## Running VCP
+
+### Option 1: Web UI (Recommended)
+
+Run the web interface to manage multiple chargers:
+
+```bash
+npm run ui
+```
+
+Open http://localhost:3001 and manage your chargers visually. See [UI-GUIDE.md](./UI-GUIDE.md) for full documentation.
+
+### Option 2: Command Line
 
 Configure env variables:
 
