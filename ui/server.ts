@@ -8,6 +8,11 @@ import { OcppVersion } from "../src/ocppVersion";
 import type { ChargerConfig, ChargerState, GlobalConfig } from "./types";
 import { bootNotificationOcppMessage } from "../src/v16/messages/bootNotification";
 import { statusNotificationOcppMessage } from "../src/v16/messages/statusNotification";
+import { startTransactionOcppMessage } from "../src/v16/messages/startTransaction";
+import { stopTransactionOcppMessage } from "../src/v16/messages/stopTransaction";
+import { authorizeOcppMessage } from "../src/v16/messages/authorize";
+import { meterValuesOcppMessage } from "../src/v16/messages/meterValues";
+import { heartbeatOcppMessage } from "../src/v16/messages/heartbeat";
 import { logger } from "../src/logger";
 
 interface ChargerInstance {
@@ -132,11 +137,30 @@ class UIServer {
           endpoint: instance.config.websocketUrl,
           chargePointId: instance.config.serial,
           ocppVersion: ocppVersion,
-          basicAuthPassword: instance.config.password,
+          basicAuthPassword: instance.config.password || undefined,
           adminPort: instance.config.adminPort,
         });
 
-        await vcp.connect();
+        try {
+          await vcp.connect();
+        } catch (connectError: any) {
+          instance.status = "Error";
+          logger.error(`WebSocket connection failed for ${id}:`, connectError);
+
+          let errorMessage = "Connection failed";
+          if (connectError.message?.includes("401")) {
+            errorMessage =
+              "Authentication failed (401). Check your password or leave it empty if not required.";
+          } else if (connectError.message?.includes("ECONNREFUSED")) {
+            errorMessage =
+              "Connection refused. Make sure the OCPP server is running.";
+          } else if (connectError.message) {
+            errorMessage = connectError.message;
+          }
+
+          return c.json({ error: errorMessage }, 500);
+        }
+
         instance.vcp = vcp;
         instance.status = "Running";
 
@@ -242,7 +266,7 @@ class UIServer {
               endpoint: instance.config.websocketUrl,
               chargePointId: instance.config.serial,
               ocppVersion: ocppVersion,
-              basicAuthPassword: instance.config.password,
+              basicAuthPassword: instance.config.password || undefined,
               adminPort: instance.config.adminPort,
             });
 
@@ -272,9 +296,17 @@ class UIServer {
             }
 
             results.push({ id, success: true });
-          } catch (error) {
+          } catch (error: any) {
             instance.status = "Error";
-            results.push({ id, success: false, error: String(error) });
+            let errorMessage = String(error);
+            if (error.message?.includes("401")) {
+              errorMessage = "Authentication failed (401)";
+            } else if (error.message?.includes("ECONNREFUSED")) {
+              errorMessage = "Connection refused";
+            } else if (error.message) {
+              errorMessage = error.message;
+            }
+            results.push({ id, success: false, error: errorMessage });
           }
         }
       }
@@ -303,6 +335,257 @@ class UIServer {
       }
 
       return c.json({ results });
+    });
+
+    // Get specific charger details
+    this.app.get("/api/chargers/:id", (c) => {
+      const id = c.req.param("id");
+      const instance = this.chargers.get(id);
+
+      if (!instance) {
+        return c.json({ error: "Charger not found" }, 404);
+      }
+
+      return c.json({
+        config: instance.config,
+        status: instance.status,
+      });
+    });
+
+    // Update connector status
+    this.app.post(
+      "/api/chargers/:id/connectors/:connectorId/status",
+      async (c) => {
+        const id = c.req.param("id");
+        const connectorId = parseInt(c.req.param("connectorId"));
+        const instance = this.chargers.get(id);
+
+        if (!instance) {
+          return c.json({ error: "Charger not found" }, 404);
+        }
+
+        if (instance.status !== "Running") {
+          return c.json({ error: "Charger must be running" }, 400);
+        }
+
+        const body = await c.req.json();
+        const { status, errorCode = "NoError" } = body;
+
+        try {
+          // Update the connector status in config
+          const connector = instance.config.connectors.find(
+            (c) => c.id === connectorId
+          );
+          if (connector) {
+            connector.status = status;
+          }
+
+          // Send status notification
+          instance.vcp.send(
+            statusNotificationOcppMessage.request({
+              connectorId,
+              errorCode,
+              status,
+            })
+          );
+
+          return c.json({ success: true });
+        } catch (error) {
+          logger.error(`Failed to update connector status:`, error);
+          return c.json({ error: String(error) }, 500);
+        }
+      }
+    );
+
+    // Start transaction
+    this.app.post(
+      "/api/chargers/:id/connectors/:connectorId/start-transaction",
+      async (c) => {
+        const id = c.req.param("id");
+        const connectorId = parseInt(c.req.param("connectorId"));
+        const instance = this.chargers.get(id);
+
+        if (!instance) {
+          return c.json({ error: "Charger not found" }, 404);
+        }
+
+        if (instance.status !== "Running") {
+          return c.json({ error: "Charger must be running" }, 400);
+        }
+
+        const body = await c.req.json();
+        const { idTag, meterStart = 0, reservationId } = body;
+
+        try {
+          const connector = instance.config.connectors.find(
+            (c) => c.id === connectorId
+          );
+          if (connector) {
+            connector.idTag = idTag;
+          }
+
+          instance.vcp.send(
+            startTransactionOcppMessage.request({
+              connectorId,
+              idTag,
+              meterStart,
+              timestamp: new Date().toISOString(),
+              reservationId,
+            })
+          );
+
+          return c.json({ success: true });
+        } catch (error) {
+          logger.error(`Failed to start transaction:`, error);
+          return c.json({ error: String(error) }, 500);
+        }
+      }
+    );
+
+    // Stop transaction
+    this.app.post(
+      "/api/chargers/:id/connectors/:connectorId/stop-transaction",
+      async (c) => {
+        const id = c.req.param("id");
+        const connectorId = parseInt(c.req.param("connectorId"));
+        const instance = this.chargers.get(id);
+
+        if (!instance) {
+          return c.json({ error: "Charger not found" }, 404);
+        }
+
+        if (instance.status !== "Running") {
+          return c.json({ error: "Charger must be running" }, 400);
+        }
+
+        const body = await c.req.json();
+        const { transactionId, meterStop, idTag, reason = "Local" } = body;
+
+        try {
+          const connector = instance.config.connectors.find(
+            (c) => c.id === connectorId
+          );
+          if (connector) {
+            connector.transactionId = undefined;
+            connector.idTag = undefined;
+          }
+
+          instance.vcp.send(
+            stopTransactionOcppMessage.request({
+              transactionId,
+              meterStop: meterStop || 1000,
+              timestamp: new Date().toISOString(),
+              idTag,
+              reason,
+            })
+          );
+
+          return c.json({ success: true });
+        } catch (error) {
+          logger.error(`Failed to stop transaction:`, error);
+          return c.json({ error: String(error) }, 500);
+        }
+      }
+    );
+
+    // Authorize
+    this.app.post("/api/chargers/:id/authorize", async (c) => {
+      const id = c.req.param("id");
+      const instance = this.chargers.get(id);
+
+      if (!instance) {
+        return c.json({ error: "Charger not found" }, 404);
+      }
+
+      if (instance.status !== "Running") {
+        return c.json({ error: "Charger must be running" }, 400);
+      }
+
+      const body = await c.req.json();
+      const { idTag } = body;
+
+      try {
+        instance.vcp.send(
+          authorizeOcppMessage.request({
+            idTag,
+          })
+        );
+
+        return c.json({ success: true });
+      } catch (error) {
+        logger.error(`Failed to authorize:`, error);
+        return c.json({ error: String(error) }, 500);
+      }
+    });
+
+    // Send meter values
+    this.app.post(
+      "/api/chargers/:id/connectors/:connectorId/meter-values",
+      async (c) => {
+        const id = c.req.param("id");
+        const connectorId = parseInt(c.req.param("connectorId"));
+        const instance = this.chargers.get(id);
+
+        if (!instance) {
+          return c.json({ error: "Charger not found" }, 404);
+        }
+
+        if (instance.status !== "Running") {
+          return c.json({ error: "Charger must be running" }, 400);
+        }
+
+        const body = await c.req.json();
+        const { transactionId, meterValue } = body;
+
+        try {
+          instance.vcp.send(
+            meterValuesOcppMessage.request({
+              connectorId,
+              transactionId,
+              meterValue: meterValue || [
+                {
+                  timestamp: new Date().toISOString(),
+                  sampledValue: [
+                    {
+                      value: "100",
+                      context: "Sample.Periodic",
+                      measurand: "Energy.Active.Import.Register",
+                      unit: "Wh",
+                    },
+                  ],
+                },
+              ],
+            })
+          );
+
+          return c.json({ success: true });
+        } catch (error) {
+          logger.error(`Failed to send meter values:`, error);
+          return c.json({ error: String(error) }, 500);
+        }
+      }
+    );
+
+    // Send heartbeat
+    this.app.post("/api/chargers/:id/heartbeat", async (c) => {
+      const id = c.req.param("id");
+      const instance = this.chargers.get(id);
+
+      if (!instance) {
+        return c.json({ error: "Charger not found" }, 404);
+      }
+
+      if (instance.status !== "Running") {
+        return c.json({ error: "Charger must be running" }, 400);
+      }
+
+      try {
+        instance.vcp.send(heartbeatOcppMessage.request({}));
+        return c.json({ success: true });
+      } catch (error) {
+        logger.error(`Failed to send heartbeat:`, error);
+        return c.json({ error: String(error) }, 500);
+      }
     });
 
     // Serve the main HTML page
@@ -343,9 +626,13 @@ class UIServer {
                 </div>
                 <div class="form-group">
                     <label for="password">Password (optional):</label>
-                    <input type="password" id="password" placeholder="Leave empty if not needed" />
+                    <input type="password" id="password" placeholder="Leave empty if no auth required" />
                     <button class="btn-icon" title="Save Configuration">💾</button>
                 </div>
+            </div>
+            <div style="padding: 10px 30px; font-size: 13px; color: #718096;">
+                💡 <strong>Tip:</strong> If you get a 401 error, your OCPP server requires authentication. Leave password empty if no authentication is needed.
+            </div>
             </div>
         </section>
 
@@ -365,7 +652,7 @@ class UIServer {
         <div class="modal-content">
             <div class="modal-header">
                 <h3>Add New Charger</h3>
-                <span class="close">&times;</span>
+                <span class="close" data-modal="addChargerModal">&times;</span>
             </div>
             <div class="modal-body">
                 <div class="form-group">
@@ -400,6 +687,28 @@ class UIServer {
             <div class="modal-footer">
                 <button id="cancelAddBtn" class="btn btn-secondary">Cancel</button>
                 <button id="confirmAddBtn" class="btn btn-primary">Add Charger</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Charger Detail Modal -->
+    <div id="chargerDetailModal" class="modal">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h3 id="detailChargerName">Charger Details</h3>
+                <span class="close" data-modal="chargerDetailModal">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div id="connectorsList" class="connectors-detail">
+                    <!-- Connectors will be populated dynamically -->
+                </div>
+                <div class="actions-section">
+                    <h4>Quick Actions</h4>
+                    <div class="action-buttons">
+                        <button id="sendHeartbeatBtn" class="btn btn-primary">💓 Send Heartbeat</button>
+                        <button id="authorizeBtn" class="btn btn-primary">🔐 Authorize</button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
