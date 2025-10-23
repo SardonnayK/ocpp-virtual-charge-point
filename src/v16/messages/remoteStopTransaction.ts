@@ -21,7 +21,7 @@ class RemoteStopTransactionOcppMessage extends OcppIncoming<
 > {
   reqHandler = async (
     vcp: VCP,
-    call: OcppCall<z.infer<RemoteStopTransactionReqType>>,
+    call: OcppCall<z.infer<RemoteStopTransactionReqType>>
   ): Promise<void> => {
     const transactionId = call.payload.transactionId;
     const transaction = vcp.transactionManager.transactions.get(transactionId);
@@ -31,20 +31,24 @@ class RemoteStopTransactionOcppMessage extends OcppIncoming<
     }
     vcp.respond(this.response(call, { status: "Accepted" }));
 
+    // Get final meter value before stopping the transaction
+    const finalMeterValue = vcp.transactionManager.getMeterValue(transactionId);
+
     const ocmf = generateOCMF({
       startTime: transaction.startedAt,
       startEnergy: 0,
       endTime: new Date(),
-      endEnergy: vcp.transactionManager.getMeterValue(transactionId) / 1000,
+      endEnergy: finalMeterValue / 1000,
       idTag: transaction.idTag,
     });
+
+    // Stop the transaction immediately to prevent further meter values
+    vcp.transactionManager.stopTransaction(transactionId);
 
     vcp.send(
       stopTransactionOcppMessage.request({
         transactionId: transactionId,
-        meterStop: Math.floor(
-          vcp.transactionManager.getMeterValue(transactionId),
-        ),
+        meterStop: Math.floor(finalMeterValue),
         timestamp: new Date().toISOString(),
         transactionData: [
           {
@@ -62,14 +66,14 @@ class RemoteStopTransactionOcppMessage extends OcppIncoming<
             ],
           },
         ],
-      }),
+      })
     );
     vcp.send(
       statusNotificationOcppMessage.request({
         connectorId: transaction.connectorId,
         errorCode: "NoError",
         status: "Available",
-      }),
+      })
     );
   };
 }
@@ -78,5 +82,5 @@ export const remoteStopTransactionOcppMessage =
   new RemoteStopTransactionOcppMessage(
     "RemoteStopTransaction",
     RemoteStopTransactionReqSchema,
-    RemoteStopTransactionResSchema,
+    RemoteStopTransactionResSchema
   );

@@ -1,5 +1,6 @@
 import * as util from "node:util";
 import { WebSocket } from "ws";
+import { EventEmitter } from "node:events";
 
 import { serve } from "@hono/node-server";
 import { zValidator } from "@hono/zod-validator";
@@ -39,7 +40,7 @@ interface LogEntry {
   metadata: Record<string, unknown>;
 }
 
-export class VCP {
+export class VCP extends EventEmitter {
   private ws?: WebSocket;
   private messageHandler: OcppMessageHandler;
 
@@ -48,6 +49,7 @@ export class VCP {
   transactionManager = new TransactionManager();
 
   constructor(private vcpOptions: VCPOptions) {
+    super();
     this.messageHandler = resolveMessageHandler(vcpOptions.ocppVersion);
     if (vcpOptions.adminPort) {
       const adminApi = new Hono();
@@ -58,13 +60,13 @@ export class VCP {
           z.object({
             action: z.string(),
             payload: z.any(),
-          }),
+          })
         ),
         (c) => {
           const validated = c.req.valid("json");
           this.send(call(validated.action, validated.payload));
           return c.text("OK");
-        },
+        }
       );
       serve({
         fetch: adminApi.fetch,
@@ -76,7 +78,7 @@ export class VCP {
   async connect(): Promise<void> {
     logger.info(`Connecting... | ${util.inspect(this.vcpOptions)}`);
     this.isFinishing = false;
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const websocketUrl = `${this.vcpOptions.endpoint}/${this.vcpOptions.chargePointId}`;
       const protocol = toProtocolVersion(this.vcpOptions.ocppVersion);
       this.ws = new WebSocket(websocketUrl, [protocol], {
@@ -85,13 +87,17 @@ export class VCP {
         headers: {
           ...(this.vcpOptions.basicAuthPassword && {
             Authorization: `Basic ${Buffer.from(
-              `${this.vcpOptions.chargePointId}:${this.vcpOptions.basicAuthPassword}`,
+              `${this.vcpOptions.chargePointId}:${this.vcpOptions.basicAuthPassword}`
             ).toString("base64")}`,
           }),
         },
       });
 
-      this.ws.on("open", () => resolve());
+      this.ws.on("open", () => {
+        logger.info("WebSocket connection opened");
+        this.emit("connected");
+        resolve();
+      });
       this.ws.on("message", (message: string) => this._onMessage(message));
       this.ws.on("ping", () => {
         logger.info("Received PING");
@@ -100,8 +106,16 @@ export class VCP {
         logger.info("Received PONG");
       });
       this.ws.on("close", (code: number, reason: string) =>
-        this._onClose(code, reason),
+        this._onClose(code, reason)
       );
+      this.ws.on("error", (error: Error) => {
+        logger.error(`WebSocket error: ${error.message}`);
+        this.emit("error", error);
+        // If we haven't connected yet, reject the promise
+        if (this.ws?.readyState !== WebSocket.OPEN) {
+          reject(error);
+        }
+      });
     });
   }
 
@@ -121,7 +135,7 @@ export class VCP {
     validateOcppOutgoingRequest(
       this.vcpOptions.ocppVersion,
       ocppCall.action,
-      JSON.parse(JSON.stringify(ocppCall.payload)),
+      JSON.parse(JSON.stringify(ocppCall.payload))
     );
     this.ws.send(jsonMessage);
   }
@@ -136,7 +150,7 @@ export class VCP {
     validateOcppIncomingResponse(
       this.vcpOptions.ocppVersion,
       result.action,
-      JSON.parse(JSON.stringify(result.payload)),
+      JSON.parse(JSON.stringify(result.payload))
     );
     this.ws.send(jsonMessage);
   }
@@ -166,13 +180,12 @@ export class VCP {
   close() {
     if (!this.ws) {
       throw new Error(
-        "Trying to close a Websocket that was not opened. Call connect() first",
+        "Trying to close a Websocket that was not opened. Call connect() first"
       );
     }
     this.isFinishing = true;
     this.ws.close();
     this.ws = undefined;
-    process.exit(1);
   }
 
   async getDiagnosticData(): Promise<LogEntry[]> {
@@ -200,11 +213,11 @@ export class VCP {
               message: info.message,
               metadata: Object.fromEntries(
                 Object.entries(info).filter(
-                  ([key]) => !["timestamp", "level", "message"].includes(key),
-                ),
+                  ([key]) => !["timestamp", "level", "message"].includes(key)
+                )
               ),
             });
-          },
+          }
         );
 
         // Resolve after a short delay to collect recent logs
@@ -231,13 +244,13 @@ export class VCP {
       const enqueuedCall = ocppOutbox.get(messageId);
       if (!enqueuedCall) {
         throw new Error(
-          `Received CallResult for unknown messageId=${messageId}`,
+          `Received CallResult for unknown messageId=${messageId}`
         );
       }
       validateOcppOutgoingResponse(
         this.vcpOptions.ocppVersion,
         enqueuedCall.action,
-        payload,
+        payload
       );
       this.messageHandler.handleCallResult(this, enqueuedCall, {
         messageId,
@@ -259,9 +272,15 @@ export class VCP {
 
   private _onClose(code: number, reason: string) {
     if (this.isFinishing) {
+      logger.info(
+        `Connection closed gracefully. code=${code}, reason=${reason}`
+      );
+      this.emit("disconnected", { code, reason, graceful: true });
       return;
     }
-    logger.info(`Connection closed. code=${code}, reason=${reason}`);
-    process.exit();
+    logger.warn(
+      `Connection closed unexpectedly. code=${code}, reason=${reason}`
+    );
+    this.emit("disconnected", { code, reason, graceful: false });
   }
 }

@@ -43,14 +43,17 @@ class StopTransactionOcppMessage extends OcppOutgoing<
   resHandler = async (
     vcp: VCP,
     call: OcppCall<z.infer<StopTransactionReqType>>,
-    _result: OcppCallResult<z.infer<StopTransactionResType>>,
+    _result: OcppCallResult<z.infer<StopTransactionResType>>
   ): Promise<void> => {
-    vcp.transactionManager.stopTransaction(call.payload.transactionId);
+    // Only stop if transaction still exists (may have been stopped already by RemoteStopTransaction)
+    if (vcp.transactionManager.transactions.has(call.payload.transactionId)) {
+      vcp.transactionManager.stopTransaction(call.payload.transactionId);
+    }
   };
 }
 
 export const stopTransactionOcppMessage = new StopTransactionOcppMessage(
   "StopTransaction",
   StopTransactionReqSchema,
-  StopTransactionResSchema,
+  StopTransactionResSchema
 );
