@@ -6,7 +6,6 @@ import {
   ConnectorIdSchema,
   IdTokenSchema,
 } from "./_common";
-import { authorizeOcppMessage } from "./authorize";
 import { startTransactionOcppMessage } from "./startTransaction";
 import { statusNotificationOcppMessage } from "./statusNotification";
 
@@ -28,7 +27,7 @@ class RemoteStartTransactionOcppMessage extends OcppIncoming<
 > {
   reqHandler = async (
     vcp: VCP,
-    call: OcppCall<z.infer<RemoteStartTransactionReqType>>
+    call: OcppCall<z.infer<RemoteStartTransactionReqType>>,
   ): Promise<void> => {
     if (!call.payload.connectorId) {
       vcp.respond(this.response(call, { status: "Rejected" }));
@@ -41,28 +40,20 @@ class RemoteStartTransactionOcppMessage extends OcppIncoming<
       return;
     }
     vcp.respond(this.response(call, { status: "Accepted" }));
-
-    // Send Authorize request before starting transaction (OCPP best practice)
-    vcp.send(
-      authorizeOcppMessage.request({
-        idTag: call.payload.idTag,
-      })
-    );
-
     vcp.send(
       startTransactionOcppMessage.request({
         connectorId: call.payload.connectorId,
         idTag: call.payload.idTag,
         meterStart: 0,
         timestamp: new Date().toISOString(),
-      })
+      }),
     );
     vcp.send(
       statusNotificationOcppMessage.request({
         connectorId: call.payload.connectorId,
         errorCode: "NoError",
         status: "Charging",
-      })
+      }),
     );
   };
 }
@@ -71,5 +62,5 @@ export const remoteStartTransactionOcppMessage =
   new RemoteStartTransactionOcppMessage(
     "RemoteStartTransaction",
     RemoteStartTransactionReqSchema,
-    RemoteStartTransactionResSchema
+    RemoteStartTransactionResSchema,
   );

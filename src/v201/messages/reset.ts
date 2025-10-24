@@ -19,16 +19,16 @@ type ResetResType = typeof ResetResSchema;
 class ResetOcppIncoming extends OcppIncoming<ResetReqType, ResetResType> {
   reqHandler = async (
     vcp: VCP,
-    call: OcppCall<z.infer<ResetReqType>>
+    call: OcppCall<z.infer<ResetReqType>>,
   ): Promise<void> => {
     vcp.respond(this.response(call, { status: "Accepted" }));
     await delay(3_000);
-    vcp.close();
+    process.exit(1);
   };
 }
 
 export const resetOcppIncoming = new ResetOcppIncoming(
   "Reset",
   ResetReqSchema,
-  ResetResSchema
+  ResetResSchema,
 );
