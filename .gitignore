@@ -136,3 +136,6 @@ dist
 # UI compiled files
 ui/client.js
 ui/client.js.map
+
+# UI state file - contains user-specific charger configurations
+ui/chargers-state.json

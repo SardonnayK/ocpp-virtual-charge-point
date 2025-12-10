@@ -21,17 +21,114 @@ interface ChargerInstance {
   status: "Stopped" | "Starting" | "Running" | "Stopping" | "Error";
 }
 
+interface PersistedState {
+  version: number;
+  globalConfig: GlobalConfig;
+  chargers: ChargerConfig[];
+}
+
 class UIServer {
+  private static readonly STATE_FILE_PATH = path.join(
+    __dirname,
+    "chargers-state.json"
+  );
+  private static readonly STATE_VERSION = 1;
+  private static readonly DEBOUNCE_DELAY = 2000; // 2 seconds
+
   private chargers: Map<string, ChargerInstance> = new Map();
   private globalConfig: GlobalConfig = {
     websocketUrl: "ws://localhost:9090/ocpp",
     password: undefined,
   };
   private app: Hono;
+  private saveStateTimeout: NodeJS.Timeout | null = null;
 
   constructor() {
     this.app = new Hono();
+    this.loadState();
     this.setupRoutes();
+  }
+
+  private loadState(): void {
+    try {
+      if (fs.existsSync(UIServer.STATE_FILE_PATH)) {
+        const fileContent = fs.readFileSync(UIServer.STATE_FILE_PATH, "utf-8");
+        const state: PersistedState = JSON.parse(fileContent);
+
+        // Check version compatibility
+        if (state.version !== UIServer.STATE_VERSION) {
+          logger.warn(
+            `State file version mismatch. Expected ${UIServer.STATE_VERSION}, got ${state.version}. Ignoring saved state.`
+          );
+          return;
+        }
+
+        // Restore global config
+        if (state.globalConfig) {
+          this.globalConfig = state.globalConfig;
+        }
+
+        // Restore chargers in Stopped state
+        if (state.chargers && Array.isArray(state.chargers)) {
+          for (const config of state.chargers) {
+            this.chargers.set(config.id, {
+              config,
+              vcp: null as any,
+              status: "Stopped",
+            });
+          }
+          logger.info(
+            `Restored ${state.chargers.length} charger(s) from state file`
+          );
+        }
+      }
+    } catch (error) {
+      logger.error("Failed to load state from file:", error);
+      // Continue with empty state on error
+    }
+  }
+
+  private saveState(immediate = false): void {
+    const performSave = () => {
+      try {
+        const chargerConfigs: ChargerConfig[] = Array.from(
+          this.chargers.values()
+        ).map((instance) => instance.config);
+
+        const state: PersistedState = {
+          version: UIServer.STATE_VERSION,
+          globalConfig: this.globalConfig,
+          chargers: chargerConfigs,
+        };
+
+        fs.writeFileSync(
+          UIServer.STATE_FILE_PATH,
+          JSON.stringify(state, null, 2),
+          "utf-8"
+        );
+        logger.debug("State saved successfully");
+      } catch (error) {
+        logger.error("Failed to save state to file:", error);
+      }
+    };
+
+    if (immediate) {
+      // Clear any pending debounced save and save immediately
+      if (this.saveStateTimeout) {
+        clearTimeout(this.saveStateTimeout);
+        this.saveStateTimeout = null;
+      }
+      performSave();
+    } else {
+      // Debounced save
+      if (this.saveStateTimeout) {
+        clearTimeout(this.saveStateTimeout);
+      }
+      this.saveStateTimeout = setTimeout(() => {
+        performSave();
+        this.saveStateTimeout = null;
+      }, UIServer.DEBOUNCE_DELAY);
+    }
   }
 
   private setupRoutes() {
@@ -79,6 +176,7 @@ class UIServer {
         websocketUrl: body.websocketUrl || this.globalConfig.websocketUrl,
         password: body.password,
       };
+      this.saveState(true); // Immediate save for critical config change
       return c.json({ success: true });
     });
 
@@ -102,6 +200,7 @@ class UIServer {
         status: "Stopped",
       });
 
+      this.saveState(true); // Immediate save for critical operation
       return c.json({ success: true, id: config.id });
     });
 
@@ -139,6 +238,7 @@ class UIServer {
           ocppVersion: ocppVersion,
           basicAuthPassword: instance.config.password || undefined,
           adminPort: instance.config.adminPort,
+          skipProcessExit: true, // Don't exit process when charger stops
         });
 
         try {
@@ -206,7 +306,11 @@ class UIServer {
       try {
         instance.status = "Stopping";
         if (instance.vcp) {
-          instance.vcp.close();
+          try {
+            instance.vcp.close();
+          } catch (closeError) {
+            logger.error(`Error closing VCP for ${id}:`, closeError);
+          }
         }
         instance.status = "Stopped";
         return c.json({ success: true });
@@ -234,6 +338,7 @@ class UIServer {
       }
 
       this.chargers.delete(id);
+      this.saveState(true); // Immediate save for critical operation
       return c.json({ success: true });
     });
 
@@ -268,6 +373,7 @@ class UIServer {
               ocppVersion: ocppVersion,
               basicAuthPassword: instance.config.password || undefined,
               adminPort: instance.config.adminPort,
+              skipProcessExit: true, // Don't exit process when charger stops
             });
 
             await vcp.connect();
@@ -323,7 +429,11 @@ class UIServer {
           try {
             instance.status = "Stopping";
             if (instance.vcp) {
-              instance.vcp.close();
+              try {
+                instance.vcp.close();
+              } catch (closeError) {
+                logger.error(`Error closing VCP for ${id}:`, closeError);
+              }
             }
             instance.status = "Stopped";
             results.push({ id, success: true });
@@ -389,6 +499,7 @@ class UIServer {
             })
           );
 
+          this.saveState(); // Debounced save for connector updates
           return c.json({ success: true });
         } catch (error) {
           logger.error(`Failed to update connector status:`, error);
@@ -434,6 +545,7 @@ class UIServer {
             })
           );
 
+          this.saveState(); // Debounced save
           return c.json({ success: true });
         } catch (error) {
           logger.error(`Failed to start transaction:`, error);
@@ -480,6 +592,7 @@ class UIServer {
             })
           );
 
+          this.saveState(); // Debounced save
           return c.json({ success: true });
         } catch (error) {
           logger.error(`Failed to stop transaction:`, error);
@@ -728,6 +841,17 @@ class UIServer {
     });
   }
 }
+
+// Add process-level error handlers to prevent server crashes
+process.on("uncaughtException", (error) => {
+  logger.error("Uncaught exception:", error);
+  // Don't exit - just log the error and continue
+});
+
+process.on("unhandledRejection", (reason, promise) => {
+  logger.error("Unhandled rejection at:", promise, "reason:", reason);
+  // Don't exit - just log the error and continue
+});
 
 // Start the server
 const uiServer = new UIServer();
