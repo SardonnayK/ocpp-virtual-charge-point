@@ -264,6 +264,26 @@ class UIServer {
         instance.vcp = vcp;
         instance.status = "Running";
 
+        // Set up event handlers for connection lifecycle
+        vcp.on("disconnected", ({ code, reason, graceful }) => {
+          logger.warn(
+            `Charger ${id} disconnected. Code: ${code}, Reason: ${reason}, Graceful: ${graceful}`
+          );
+          if (!graceful) {
+            instance.status = "Error";
+            logger.error(
+              `Charger ${id} disconnected unexpectedly. You may need to restart it.`
+            );
+          } else {
+            instance.status = "Stopped";
+          }
+        });
+
+        vcp.on("error", (error) => {
+          logger.error(`Charger ${id} error:`, error);
+          instance.status = "Error";
+        });
+
         // Send boot notification
         if (instance.config.ocppVersion === "1.6") {
           vcp.send(
@@ -379,6 +399,26 @@ class UIServer {
             await vcp.connect();
             instance.vcp = vcp;
             instance.status = "Running";
+
+            // Set up event handlers for connection lifecycle
+            vcp.on("disconnected", ({ code, reason, graceful }) => {
+              logger.warn(
+                `Charger ${id} disconnected. Code: ${code}, Reason: ${reason}, Graceful: ${graceful}`
+              );
+              if (!graceful) {
+                instance.status = "Error";
+                logger.error(
+                  `Charger ${id} disconnected unexpectedly. You may need to restart it.`
+                );
+              } else {
+                instance.status = "Stopped";
+              }
+            });
+
+            vcp.on("error", (error) => {
+              logger.error(`Charger ${id} error:`, error);
+              instance.status = "Error";
+            });
 
             if (instance.config.ocppVersion === "1.6") {
               vcp.send(

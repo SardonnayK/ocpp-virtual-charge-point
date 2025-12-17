@@ -23,7 +23,7 @@ class RequestStopTransactionOcppIncoming extends OcppIncoming<
 > {
   reqHandler = async (
     vcp: VCP,
-    call: OcppCall<z.infer<RequestStopTransactionReqType>>,
+    call: OcppCall<z.infer<RequestStopTransactionReqType>>
   ): Promise<void> => {
     const { transactionId } = call.payload;
     const transaction = vcp.transactionManager.transactions.get(transactionId);
@@ -31,7 +31,7 @@ class RequestStopTransactionOcppIncoming extends OcppIncoming<
       vcp.respond(
         this.response(call, {
           status: "Rejected",
-        }),
+        })
       );
       return;
     }
@@ -39,16 +39,22 @@ class RequestStopTransactionOcppIncoming extends OcppIncoming<
     vcp.respond(
       this.response(call, {
         status: "Accepted",
-      }),
+      })
     );
+
+    // Get final meter value before stopping the transaction
+    const finalMeterValue = vcp.transactionManager.getMeterValue(transactionId);
 
     const ocmf = generateOCMF({
       startTime: transaction.startedAt,
       startEnergy: 0,
       endTime: new Date(),
-      endEnergy: vcp.transactionManager.getMeterValue(transactionId) / 1000,
+      endEnergy: finalMeterValue / 1000,
       idTag: transaction.idTag,
     });
+
+    // Stop the transaction immediately to prevent further meter values
+    vcp.transactionManager.stopTransaction(transactionId);
 
     vcp.send(
       transactionEventOcppOutgoing.request({
@@ -68,7 +74,7 @@ class RequestStopTransactionOcppIncoming extends OcppIncoming<
             timestamp: new Date().toISOString(),
             sampledValue: [
               {
-                value: vcp.transactionManager.getMeterValue(transactionId),
+                value: finalMeterValue,
                 signedMeterValue: {
                   signedMeterData: Buffer.from(ocmf).toString("base64"),
                   signingMethod: "", // Already included in the signedMeterData
@@ -80,7 +86,7 @@ class RequestStopTransactionOcppIncoming extends OcppIncoming<
             ],
           },
         ],
-      }),
+      })
     );
     vcp.send(
       statusNotificationOcppOutgoing.request({
@@ -88,9 +94,8 @@ class RequestStopTransactionOcppIncoming extends OcppIncoming<
         connectorId: 1,
         connectorStatus: "Available",
         timestamp: new Date().toISOString(),
-      }),
+      })
     );
-    vcp.transactionManager.stopTransaction(transactionId);
   };
 }
 
@@ -98,5 +103,5 @@ export const requestStopTransactionOcppIncoming =
   new RequestStopTransactionOcppIncoming(
     "RequestStopTransaction",
     RequestStopTransactionReqSchema,
-    RequestStopTransactionResSchema,
+    RequestStopTransactionResSchema
   );
